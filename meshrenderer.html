@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=yes"
+    />
+    <title>CG - Mesh Renderer</title>
+    <link rel="stylesheet" href="./css/style.css" />
+  </head>
+
+  <body>
+    <!-- glMatrix: A vector/matrix library for WebGL, https://glmatrix.net/ -->
+    <script src="./js/gl-matrix.js"></script>
+
+    <!-- TWGL: A Tiny WebGL helper Library, https://twgljs.org/ -->
+    <script src="./js/twgl.js"></script>
+
+    <!-- Tweakpane: Compact pane library for fine-tuning parameters, https://cocopon.github.io/tweakpane/ -->
+    <script src="./js/tweakpane-4.0.0.js"></script>
+
+    <!--  implementation of an arcball controller, see https://en.wikibooks.org/wiki/OpenGL_Programming/Modern_OpenGL_Tutorial_Arcball -->
+    <script src="./js/arcball.js"></script>
+
+    <!-- parser for the Wavefront OBJ (and MTL) file format, based on https://webgl2fundamentals.org/webgl/webgl-load-obj-w-mtl-w-normal-maps.html -->
+    <script src="./js/parseobj.js"></script>
+
+    <!-- wrapper for IndexedDB object store for saving settings  -->
+    <script src="./js/storage.js"></script>
+
+    <!-- utility functions for ui, file loading, etc. to not clutter up this file  -->
+    <script src="./js/util.js"></script>
+
+    <canvas id="canvas" tabindex="0" autofocus></canvas>
+    <div id="pane"></div>
+
+    <!-- our vertex shader; it handles the processing of individual vertices, see https://www.khronos.org/opengl/wiki/Vertex_Shader -->
+    <script id="vs" type="x-shader/x-vertex">
+              #version 300 es
+
+      // uniforms are constant for the entire primitive
+      uniform mat4 modelViewProjection;
+      uniform mat4 transposeInverseModelView;
+      uniform mat4 modelView;
+
+      // per-vertex attributes of our mesh
+      in vec4 a_position;
+      in vec3 a_normal;
+
+      // these are the attributes that will be interpolated and passed to the fragment shader
+      out vec4 v_position;
+      out vec3 v_normal;
+      out vec3 v_eyeDir; // Direction from the fragment to the eye (camera)
+      out vec3 v_lightDir; // Direction from the fragment to the light source
+
+      void main() {
+          v_position = modelView * a_position;
+          v_normal = normalize((transposeInverseModelView * vec4(a_normal, 0.0)).xyz);
+
+          // Calculate the eye and light directions in world space
+          vec3 eyePos = vec3(0.0, 0.0, 2.0 * sqrt(3.0)); // Replace this with the actual eye position
+          v_eyeDir = normalize(eyePos - v_position.xyz);
+
+          vec3 lightPos = vec3(1.0, 1.0, 1.0); // Replace this with the actual light position
+          v_lightDir = normalize(lightPos - v_position.xyz);
+
+          gl_Position = modelViewProjection * a_position;
+      }
+    </script>
+
+    <!-- our fragment shader; reponsible for determining the output (color, depth, etc.) for each sample of a rasterized primitive (fragment), see https://www.khronos.org/opengl/wiki/Fragment_Shader -->
+    <script id="fs" type="x-shader/x-fragment">
+        #version 300 es
+        precision highp float;
+        
+        // these are the interpolated attributes we receive from the vertex shader
+        in vec4 v_position;
+        in vec3 v_normal;
+        in vec3 v_eyeDir;
+        in vec3 v_lightDir;
+        
+        // Material properties (you can add these as uniforms or directly set them in the code)
+        uniform vec3 diffuse;
+        uniform vec3 ambient;
+        uniform vec3 specular;
+        uniform float shininess;
+        
+        out vec4 outColor;
+        
+        void main() {
+            // Normalize vectors
+            vec3 normal = normalize(v_normal);
+            vec3 eyeDir = normalize(v_eyeDir);
+            vec3 lightDir = normalize(v_lightDir);
+        
+            // Calculate Lambertian reflection (diffuse)
+            float lambertian = max(dot(normal, lightDir), 0.0);
+        
+            // Calculate specular reflection
+            vec3 reflectionDir = reflect(-lightDir, normal);
+            float specularHighlight = pow(max(dot(reflectionDir, eyeDir), 0.0), shininess);
+        
+            // Combine ambient, diffuse, and specular components
+            vec3 ambientTerm = ambient * 0.2; // You can adjust the ambient intensity here
+            vec3 diffuseTerm = diffuse * lambertian;
+            vec3 specularTerm = specular * specularHighlight;
+        
+            vec3 finalColor = ambientTerm + diffuseTerm + specularTerm;
+        
+            outColor = vec4(finalColor, 1.0);
+        }
+    </script>
+
+    <!-- our main code -->
+    <script type="module">
+      // our WebGL context
+      const gl = document.querySelector("#canvas").getContext("webgl2");
+
+      // our default settings
+      const defaultSettings = {
+        objects: {},
+        materials: {},
+        background: { r: 1, g: 1, b: 1 },
+        fov: 60,
+        perspective: true,
+        // all custom parameters need to have a default value
+        //myParameter: 50,
+      };
+
+      // set up our default view matrix
+      const eye = [0, 0, 2.0 * Math.sqrt(3.0)];
+      const target = [0, 0, 0];
+      const up = [0, 1, 0];
+      defaultSettings.view = glMatrix.mat4.create();
+      glMatrix.mat4.lookAt(defaultSettings.view, eye, target, up);
+
+      // our default material
+      const defaultMaterial = {
+        diffuse: [1, 1, 1],
+        ambient: [0, 0, 0],
+        specular: [1, 1, 1],
+        emissive: [0, 0, 0],
+        shininess: 400,
+        ambientMap: "",
+        diffuseMap: "",
+        specularMap: "",
+        shininessMap: "",
+        emissiveMap: "",
+        bumpMap: "",
+      };
+
+      const environment = {
+        store: new Storage("coast"),
+        gl,
+        ui: {},
+        scene: {},
+        materials: {},
+        images: { "": null },
+        textures: {},
+        settings: defaultSettings,
+        defaults: {
+          settings: defaultSettings,
+          material: defaultMaterial,
+        },
+        statistics: {
+          totalVertices: 0,
+          renderedVertices: 0,
+          framesPerSecond: 0,
+        },
+      };
+
+      let previousTime = null;
+
+      // here we initialize our shaders
+      twgl.setAttributePrefix("a_");
+      environment.programInfo = twgl.createProgramInfo(gl, ["vs", "fs"]);
+
+      // we want to store our settings when the page is reloaded or the tab is closed, but some of these events are triggered unreliably on different platforms
+      // this combination seems to work in all of the tested environments
+      window.addEventListener("pagehide", (event) => {
+        saveSettings(environment);
+      });
+      window.addEventListener("beforeunload", (event) => {
+        saveSettings(environment);
+      });
+      document.addEventListener("visibilitychange", (event) => {
+        saveSettings(environment);
+      });
+
+      // set up our user interface
+      setupInterface(environment);
+
+      // restore data and settings
+      restoreSession(environment, function (env) {
+        // add any custom UI elements/input bindings here; make sure to add a proper default value to defaultSettings
+        /* const myFolder = env.ui.settingsPane.addFolder({title:"My Custom Folder"});
+            myFolder.addBinding(env.settings,"myParameter", {
+                min: 0,
+                max: 100,
+            }); */
+      });
+
+      // start the render loop
+      requestAnimationFrame(render);
+
+      // our render function
+      function render(time) {
+        if (!previousTime) previousTime = time;
+
+        const timeDelta = 0.001 * (time - previousTime);
+        environment.controller.animate(timeDelta);
+        environment.statistics.framesPerSecond =
+          timeDelta > 0.0 ? 1.0 / timeDelta : 0.0;
+        previousTime = time;
+
+        twgl.resizeCanvasToDisplaySize(gl.canvas);
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthFunc(gl.LESS);
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.BACK);
+        gl.clearColor(
+          environment.settings.background.r,
+          environment.settings.background.g,
+          environment.settings.background.b,
+          1.0
+        );
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        
+
+        // check whether some geometry is loaded already
+        if (environment.scene.geometries) {
+          const fov = (environment.settings.fov * Math.PI) / 180;
+          const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+          const zNear = 0.125;
+          const zFar = 256.0;
+          let projection = glMatrix.mat4.create();
+
+          if (environment.settings.perspective) {
+            // set up our perspective projection matrix
+            projection = glMatrix.mat4.perspective(
+              projection,
+              fov,
+              aspect,
+              zNear,
+              zFar
+            );
+          } else {
+            // set up a orthographic projection matrix that approximates our perspective projection
+            const top = 2.0 * Math.sqrt(3.0) * Math.tan(0.5 * fov);
+            const right = top * aspect;
+            projection = glMatrix.mat4.ortho(
+              projection,
+              -right,
+              right,
+              -top,
+              top,
+              zNear,
+              zFar
+            );
+          }
+
+          // our model matrix transforms the object coordinates into a normalized and centered coordinate system
+          const extent = glMatrix.vec3.create();
+          const offset = glMatrix.vec3.create();
+          glMatrix.vec3.subtract(
+            extent,
+            environment.scene.bounds.max,
+            environment.scene.bounds.min
+          );
+          glMatrix.vec3.scaleAndAdd(
+            offset,
+            environment.scene.bounds.min,
+            extent,
+            0.5
+          );
+          glMatrix.vec3.negate(offset, offset);
+          const maxDim = Math.max(extent[0], extent[1], extent[2]);
+          const scale = 2.0 / maxDim;
+
+          const model = glMatrix.mat4.create();
+          glMatrix.mat4.scale(model, model, [scale, scale, scale]);
+          glMatrix.mat4.translate(model, model, offset);
+
+          // some common matrices that might come in handy
+          const modelView = glMatrix.mat4.create();
+          glMatrix.mat4.multiply(modelView, environment.settings.view, model);
+
+          const inverseModelView = glMatrix.mat4.create();
+          glMatrix.mat4.invert(inverseModelView, modelView);
+
+          const transposeInverseModelView = glMatrix.mat4.create();
+          glMatrix.mat4.transpose(transposeInverseModelView, inverseModelView);
+
+          const modelViewProjection = glMatrix.mat4.create();
+          glMatrix.mat4.multiply(modelViewProjection, projection, modelView);
+
+          const inverseModelViewProjection = glMatrix.mat4.create();
+          glMatrix.mat4.invert(inverseModelViewProjection, modelViewProjection);
+
+          // these are the values actually passed to our shaders
+          const uniforms = {
+            modelViewProjection,
+            transposeInverseModelView,
+          };
+
+          gl.useProgram(environment.programInfo.program);
+          twgl.setUniforms(environment.programInfo, uniforms);
+
+          environment.statistics.totalVertices = 0;
+          environment.statistics.renderedVertices = 0;
+
+          for (const obj of environment.scene.geometries) {
+            environment.statistics.totalVertices += obj.data.position.length;
+
+            if (obj.name in environment.settings.objects) {
+              if (environment.settings.objects[obj.name].enabled) {
+                environment.statistics.renderedVertices +=
+                  obj.data.position.length;
+
+                const m = {
+                  ...environment.defaults.material,
+                  ...environment.materials[obj.material],
+                  ...environment.settings.materials[obj.material],
+                };
+                
+
+                Object.entries(m)
+                  .filter(
+                    ([key]) => !key.startsWith("_") && key.endsWith("Map")
+                  )
+                  .forEach(([key, filename]) => {
+                    if (filename in environment.textures) {
+                      m[key] = environment.textures[filename];
+                      m["_" + key] = true;
+                    } else {
+                      delete m[key];
+                      m["_" + key] = false;
+                    }
+                  });
+
+                gl.bindVertexArray(obj.gl.vertexArray);
+                twgl.setUniforms(environment.programInfo, m);
+                twgl.drawBufferInfo(gl, obj.gl.bufferInfo);
+              }
+            }
+          }
+        }
+        // we continuously render frames
+        requestAnimationFrame(render);
+      }
+    </script>
+  </body>
+</html>

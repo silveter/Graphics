@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>CG - Hello World</title>
+    <link rel="stylesheet" href="./css/style.css">
+</head>
+
+
+<body>
+    <!-- glMatrix: A vector/matrix library for WebGL, https://glmatrix.net/ -->
+    <script src="./js/gl-matrix.js"></script>
+
+    <!-- TWGL: A Tiny WebGL helper Library, https://twgljs.org/ -->
+    <script src="./js/twgl.js"></script>
+
+    <!-- this is the canvas element that we will be rendering onto -->
+    <canvas id="canvas" tabindex="0" autofocus></canvas>
+
+    <!-- our vertex shader; it handles the processing of individual vertices, see https://www.khronos.org/opengl/wiki/Vertex_Shader -->
+    <script id="vs" type="x-shader/x-vertex">
+        #version 300 es
+
+        uniform mat4 transformation;
+
+        in vec4 a_position;       
+        out vec4 v_position;
+        
+        void main() {
+          
+          v_position = a_position;
+          gl_Position = transformation*a_position;
+        }
+    </script>
+
+    <!-- our fragment shader; reponsible for determining the output (color, depth, etc.) for each sample of a rasterized primitive (fragment), see https://www.khronos.org/opengl/wiki/Fragment_Shader -->
+    <script id="fs" type="x-shader/x-fragment">
+        #version 300 es
+        precision highp float;
+
+        in vec4 v_position;
+        out vec4 outColor;
+
+        void main() {
+            outColor = vec4(0.5*(v_position.xyz+1.0),1.0);
+        }
+    </script>
+
+    <!-- our main code -->
+    <script type="module">
+        // our WebGL context
+        const gl = document.querySelector("#canvas").getContext("webgl2");
+        
+        // here we initialize our shaders
+        twgl.setAttributePrefix("a_");
+        const programInfo = twgl.createProgramInfo(gl, ["vs", "fs"]);
+
+        const cubeArrays = {
+            position: [
+                // front
+                -1,-1,  1,
+                 1,-1,  1,
+                 1, 1,  1,
+                -1, 1,  1,
+                // back
+                -1, -1, -1,
+                 1, -1, -1,
+                 1,  1, -1,
+                -1,  1, -1 ],                     
+            indices:[
+                // front
+                0, 1, 2,
+                2, 3, 0,
+                // right
+                1, 5, 6,
+                6, 2, 1,
+                // back
+                7, 6, 5,
+                5, 4, 7,
+                // left
+                4, 0, 3,
+                3, 7, 4,
+                // bottom
+                4, 5, 1,
+                1, 0, 4,
+                // top
+                3, 2, 6,
+                6, 7, 3                
+            ],
+        };
+
+/*    
+             ( 0, 1, 0)
+                  .
+                 / \
+                /   \
+               /     \
+              /       \
+             /         \
+            .-----------.
+       (-1,-1, 0)  ( 1,-1, 0)
+*/           
+        const triangleArrays = {
+            position: [
+                 -1, -1, 0, 
+                  1, -1, 0,
+                  0,  1, 0
+            ]
+        }
+
+        const bufferInfo = twgl.createBufferInfoFromArrays(gl, triangleArrays);
+        /* Step 2: comment this in to draw a cube instead
+        const bufferInfo = twgl.createBufferInfoFromArrays(gl, cubeArrays);
+        */
+
+        // start the render loop
+        requestAnimationFrame(render);
+
+        // our render function
+        function render(time) {
+            twgl.resizeCanvasToDisplaySize(gl.canvas);
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LESS);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            const transformation = glMatrix.mat4.create();
+/*          Step 3: set up a transformation matrix for our cube
+
+            const projection = glMatrix.mat4.create();
+            glMatrix.mat4.perspective(projection,60 * Math.PI / 180, gl.canvas.clientWidth / gl.canvas.clientHeight, 0.25, 16.0);
+
+            const view = glMatrix.mat4.create();
+            glMatrix.mat4.lookAt(view, [0,0,-8], [0,0,0], [0,1,0]);
+
+            const model = glMatrix.mat4.create();
+            glMatrix.mat4.fromYRotation(model,0.001*time);
+
+            const modelView = glMatrix.mat4.create();
+            glMatrix.mat4.multiply(modelView,view,model);
+            glMatrix.mat4.multiply(transformation,projection,modelView);
+*/
+
+            // we pass the transformation matrix as a uniform parameter to the shader program
+            const uniforms = {
+                transformation,
+            };
+
+            // set the program (set of vertex and fragment shaders) we will use
+            gl.useProgram(programInfo.program);
+
+            // set the uniform parameters of the program, they do not change
+            twgl.setUniforms(programInfo, uniforms);
+            
+            // set the buffer that will determine the rendered geometry
+            twgl.setBuffersAndAttributes(gl, programInfo, bufferInfo);
+
+            // do the actual drawing
+            twgl.drawBufferInfo(gl, bufferInfo);
+
+            // we continuously render frames
+            requestAnimationFrame(render);
+        }
+
+    </script>
+
+</body>
+
+</html>
