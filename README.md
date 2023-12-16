@@ -1,7 +1,7 @@
 # Computer Graphics, Winter Semester 2023
 
 - **Name:** Your name, e.g., Maxi Musterfrau
-- **E-Mail:** Your e-mail, e.g., maxi@musterfrau.de
+- **E-Mail:** Your e-mail, e.g., silvesterkisalu@gmail.com
 - **Matriculation no.:** Your matriculation number: 123456789
 
 <!--------------------------------------------------------------------------->
